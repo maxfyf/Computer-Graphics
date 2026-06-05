@@ -230,8 +230,17 @@ def save_label_mask(masks: list[np.ndarray], output_path: Path) -> None:
 def build_model(args: argparse.Namespace):
     ensure_sam3_importable(args.sam3_repo)
     import torch
-    from sam3 import build_sam3_image_model
-    from sam3.model.sam3_image_processor import Sam3Processor
+    try:
+        from sam3 import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
+    except ModuleNotFoundError as exc:
+        if exc.name == "pkg_resources":
+            raise SystemExit(
+                "SAM3 requires pkg_resources, which is provided by setuptools<81. "
+                "Run `uv sync` after the pyproject.toml update, or install "
+                "`setuptools>=69,<81` in this environment."
+            ) from exc
+        raise
 
     if args.device == "cuda" and not torch.cuda.is_available():
         raise SystemExit("CUDA was requested but torch.cuda.is_available() is false.")
