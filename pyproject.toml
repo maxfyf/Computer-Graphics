@@ -30,6 +30,13 @@ packages = ["scripts"]
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 
+# 普通 PyPI 包默认走清华镜像，包括 nvidia-*、numpy、scipy、pillow 等
+[[tool.uv.index]]
+name = "tuna"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
+
+# 只让 torch / torchvision 走 PyTorch 官方 CUDA 12.8 源
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
