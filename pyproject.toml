@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "computer-graphics-project"
+version = "0.1.0"
+description = "Computer graphics course project tools for image compositing and person mask extraction."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "matplotlib>=3.8",
+    "numpy>=1.26,<2",
+    "pillow>=10",
+    "sam3 @ file:///home/caiyy/FDU/year3/ComputerGraphics/Project/sam3",
+    "scikit-image>=0.23",
+    "scipy>=1.12",
+    "torch==2.10.0",
+    "torchvision>=0.25.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+generate-sam3-masks = "scripts.generate_sam3_masks:main"
+
+[tool.setuptools]
+py-modules = ["ImageCompositor", "PersonMetadataExtractor"]
+packages = ["scripts"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
