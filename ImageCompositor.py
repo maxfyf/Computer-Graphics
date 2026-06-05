@@ -1,0 +1,494 @@
+﻿"""基于马尔科夫随机场的光照一致图像合成方法"""
+import numpy as np
+from typing import Tuple
+                          
+# RGB与Lab色彩空间转换器 (基于sRGB和D65白点)
+class ColorSpaceConverter:
+    Xn, Yn, Zn = 0.95047, 1.00000, 0.95583
+    
+    # sRGB到XYZ的转换矩阵 (D65)
+    RGB_TO_XYZ = np.array([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041]
+    ])
+    
+    # XYZ到sRGB的转换矩阵 (D65)
+    XYZ_TO_RGB = np.array([
+        [ 3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660,  1.8760108,  0.0415560],
+        [ 0.0556434, -0.2040259,  1.0572252]
+    ])
+    
+    @classmethod
+    def rgb_to_lab(cls, rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        将RGB图像转换为Lab色彩空间
+
+        参数:
+            rgb: RGB图像, shape (H, W, 3), 范围 [0, 1]
+        返回:
+            L: 亮度分量, shape (H, W), 范围 0~100
+            a: 绿-红分量, shape (H, W), 范围约 -128~127
+            b: 蓝-黄分量, shape (H, W), 范围约 -128~127
+        """
+        rgb = np.asarray(rgb)
+        original_shape = rgb.shape
+        rgb_flat = rgb.reshape(-1, 3)
+        
+        # RGB -> 线性RGB (Gamma解码)
+        linear_mask = rgb_flat <= 0.04045
+        rgb_linear = np.empty_like(rgb_flat)
+        rgb_linear[linear_mask] = rgb_flat[linear_mask] / 12.92
+        rgb_linear[~linear_mask] = ((rgb_flat[~linear_mask] + 0.055) / 1.055) ** 2.4
+        
+        # 线性RGB -> XYZ
+        xyz = rgb_linear @ cls.RGB_TO_XYZ.T
+        
+        # XYZ -> Lab
+        xyz_norm = xyz / np.array([cls.Xn, cls.Yn, cls.Zn])
+        
+        delta = 6 / 29
+        threshold = delta ** 3
+        
+        f = np.where(xyz_norm > threshold, 
+                     xyz_norm ** (1/3),
+                     xyz_norm / (3 * delta**2) + 4/29)
+        
+        L = 116 * f[:, 1] - 16
+        a = 500 * (f[:, 0] - f[:, 1])
+        b = 200 * (f[:, 1] - f[:, 2])
+        
+        L = L.reshape(original_shape[:2])
+        a = a.reshape(original_shape[:2])
+        b = b.reshape(original_shape[:2])
+        
+        return L, a, b
+    
+    @classmethod
+    def lab_to_rgb(cls, L: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """
+        将Lab图像转换回RGB色彩空间
+        
+        参数:
+            L: 亮度分量, shape (H, W), 范围 0~100
+            a: 绿-红分量, shape (H, W), 范围约 -128~127
+            b: 蓝-黄分量, shape (H, W), 范围约 -128~127
+        返回:
+            rgb: RGB图像, shape (H, W, 3), 范围 [0, 1]
+        """
+        L = np.asarray(L)
+        a = np.asarray(a)
+        b = np.asarray(b)
+        original_shape = L.shape
+        
+        L_flat = L.flatten()
+        a_flat = a.flatten()
+        b_flat = b.flatten()
+        
+        # Lab -> XYZ
+        delta = 6 / 29
+        fY = (L_flat + 16) / 116
+        fX = fY + a_flat / 500
+        fZ = fY - b_flat / 200
+        
+        threshold = delta
+        Y_norm = np.where(fY > threshold, 
+                          fY ** 3,
+                          3 * delta**2 * (fY - 4/29))
+        X_norm = np.where(fX > threshold,
+                          fX ** 3,
+                          3 * delta**2 * (fX - 4/29))
+        Z_norm = np.where(fZ > threshold,
+                          fZ ** 3,
+                          3 * delta**2 * (fZ - 4/29))
+        
+        X = X_norm * cls.Xn
+        Y = Y_norm * cls.Yn
+        Z = Z_norm * cls.Zn
+        
+        xyz = np.stack([X, Y, Z], axis=1)
+        
+        # XYZ -> 线性RGB
+        rgb_linear = xyz @ cls.XYZ_TO_RGB.T
+        
+        # 线性RGB -> RGB (Gamma编码)
+        linear_mask = rgb_linear <= 0.0031308
+        rgb = np.empty_like(rgb_linear)
+        rgb[linear_mask] = rgb_linear[linear_mask] * 12.92
+        rgb[~linear_mask] = 1.055 * (rgb_linear[~linear_mask] ** (1/2.4)) - 0.055
+        
+        rgb = np.clip(rgb, 0, 1)
+        rgb = rgb.reshape(*original_shape, 3)
+        
+        return rgb
+
+# 加权泊松克隆的梯度权重计算器
+class GradientWeightCalculator:
+    @staticmethod
+    def compute_sigma_from_boundary(L_source_boundary: np.ndarray,
+                                     L_target_boundary: np.ndarray,
+                                     sigma0: float = 25.5) -> float:
+        """
+        根据合成边界亮度差异的标准差计算参数 σ = max(255 - 3 * σ^D, σ_0)
+        
+        参数:
+            L_source_boundary: 源图像在边界像素点的亮度值数组
+            L_target_boundary: 目标图像在边界像素点的亮度值数组
+            sigma0: 避免σ过小的常数
+        返回:
+            sigma: 权重变化范围参数
+        """
+        diff = L_target_boundary - L_source_boundary
+        sigma_D = np.std(diff)
+        sigma = max(255 - 3 * sigma_D, sigma0)
+        return sigma
+
+    @staticmethod
+    def compute_weights(L_source: np.ndarray, 
+                        sigma: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        计算四邻域的梯度保持权重 w_{pq} = exp(-||L_p^S - L_q^S||^2 / (2 * σ^2))
+        
+        参数:
+            L_source: 源图像亮度, shape (H, W)
+            sigma: 权重变化范围参数，由狄利克雷边界条件的满足程度决定
+        返回:
+            w_pq: 四邻域权重数组, shape (H, W, 4) 分别对应上、右、下、左
+            w_p: 归一化因子, shape (H, W), 即四个方向权重之和
+        """
+        H, W = L_source.shape
+        w_pq = np.zeros((H, W, 4))
+        
+        inv_2sigma2 = 1.0 / (2.0 * sigma * sigma)
+        if H > 1:
+            # 上方
+            grad_up = L_source[1:, :] - L_source[:-1, :]
+            w_pq[1:, :, 0] = np.exp(-grad_up**2 * inv_2sigma2)
+            # 下方
+            grad_down = L_source[:-1, :] - L_source[1:, :]
+            w_pq[:-1, :, 2] = np.exp(-grad_down**2 * inv_2sigma2) 
+        if W > 1:
+            # 右方
+            grad_right = L_source[:, :-1] - L_source[:, 1:]
+            w_pq[:, :-1, 1] = np.exp(-grad_right**2 * inv_2sigma2)
+            # 左方
+            grad_left = L_source[:, 1:] - L_source[:, :-1]
+            w_pq[:, 1:, 3] = np.exp(-grad_left**2 * inv_2sigma2)
+        
+        w_p = np.sum(w_pq, axis=2)
+        w_p = np.maximum(w_p, 1e-8)
+        
+        return w_pq, w_p
+
+
+# 直方图对齐的光照一致约束
+class HistogramAligner:
+    @staticmethod
+    def compute_histogram_mean(L_boundary: np.ndarray, L_max: int = 255) -> float:
+        """
+        计算合成边界亮度直方图的均值 M = Σ_{l=1}^{L_max} l * h_l (亮度主轴)
+        
+        参数:
+            L_boundary: 边界像素点的亮度值数组
+            L_max: 最大亮度值
+        返回:
+            mean: 亮度直方图均值
+        """
+        hist, _ = np.histogram(L_boundary, bins=np.arange(L_max + 2))
+        l_values = np.arange(L_max + 1)
+        weighted_sum = np.sum(l_values * hist)
+        
+        total_pixels = np.sum(hist)
+        if total_pixels == 0:
+            return 0.0
+        
+        return weighted_sum / total_pixels
+    
+    @staticmethod
+    def compute_prior_difference(L_source: np.ndarray,
+                                  L_target: np.ndarray,
+                                  boundary_mask: np.ndarray,
+                                  M_diff: float) -> np.ndarray:
+        """
+        计算亮度差值的先验观测值 Y
+        对于边界像素: Y = L_p^T - L_p^S
+        对于内部像素: Y = M^T - M^S
+        
+        参数:
+            L_source: 源图像亮度, shape (H, W)
+            L_target: 目标图像亮度, shape (H, W)
+            boundary_mask: 边界掩码, shape (H, W), True表示边界像素
+            M_diff: 亮度主轴差 M^T - M^S
+        返回:
+            Y: 先验观测值数组, shape (H, W)
+        """
+        Y = np.zeros_like(L_source)
+        Y[boundary_mask] = L_target[boundary_mask] - L_source[boundary_mask]
+        Y[~boundary_mask] = M_diff
+        return Y
+
+# 自适应正则化系数计算器
+class AdaptiveWeightCalculator:
+    @staticmethod
+    def compute_mu(weight_map: np.ndarray,
+                   boundary_mask: np.ndarray,
+                   foreground_mask: np.ndarray,
+                   default_mu: float = 0.5) -> float:
+        """
+        计算自适应正则化系数 μ = Σ_{p∈Ω, q∈N_p∩Ω} w_{pq} / Σ_{p∈Ω, q∈N_p∩Ω} δ_{pq}
+        
+        参数:
+            weight_map: 梯度权重 w_{pq}, shape (H, W, 4)
+            boundary_mask: 边界掩码, shape (H, W), True表示边界像素
+            foreground_mask: 前景掩码, shape (H, W), True表示前景像素
+            default_mu: 默认μ值
+        返回:
+            mu: 正则化系数，范围 [0, 1]
+        """
+        H, W = boundary_mask.shape
+        numerator = 0.0
+        denominator = 0.0
+        
+        for i in range(H):
+            for j in range(W):
+                if not foreground_mask[i, j]:
+                    continue
+                
+                # 上方
+                if i > 0 and boundary_mask[i - 1, j]:
+                    denominator += 1
+                    numerator += weight_map[i, j, 0]
+                # 右方
+                if j < W - 1 and boundary_mask[i, j + 1]:
+                    denominator += 1
+                    numerator += weight_map[i, j, 1]
+                # 下方
+                if i < H - 1 and boundary_mask[i + 1, j]:
+                    denominator += 1
+                    numerator += weight_map[i, j, 2]
+                # 左方
+                if j > 0 and boundary_mask[i, j - 1]:
+                    denominator += 1
+                    numerator += weight_map[i, j, 3]
+        
+        if denominator == 0:
+            return default_mu
+        
+        mu = numerator / denominator
+        return mu
+
+
+# 基于马尔科夫随机场的光照一致图像合成器
+class MRFImageCompositor:            
+    def __init__(self, max_iter: int = 10000, tolerance: float = 1e-6):
+        """
+        初始化合成器
+        
+        参数:
+            max_iter: LLGC最大迭代次数
+            tolerance: 收敛容差
+        """
+        self.max_iter = max_iter
+        self.tolerance = tolerance
+        
+        self.color_converter = ColorSpaceConverter()
+        self.gradient_calc = GradientWeightCalculator()
+        self.hist_aligner = HistogramAligner()
+        self.adaptive_calc = AdaptiveWeightCalculator()
+    
+    def compute_L_smooth_matrix(self, w_pq: np.ndarray, w_p: np.ndarray) -> np.ndarray:
+        """
+        构建光滑项仿射矩阵 S = D^{-1} W
+        
+        参数:
+            w_pq: 四邻域权重, shape (H, W, 4)
+            w_p: 归一化因子, shape (H, W)
+        返回:
+            S: 仿射矩阵, shape (N, N), N = H * W
+        """
+        H, W = w_pq.shape[:2]
+        N = H * W
+        
+        from scipy.sparse import lil_matrix, csr_matrix
+        W_sparse = lil_matrix((N, N))
+        
+        def idx(i, j):
+            return i * W + j
+        
+        for i in range(H):
+            for j in range(W):
+                current_idx = idx(i, j)
+                # 上方
+                if i > 0:
+                    neighbor_idx = idx(i - 1, j)
+                    weight = w_pq[i, j, 0] / w_p[i, j]
+                    W_sparse[current_idx, neighbor_idx] = weight
+                # 右方
+                if j < W - 1:
+                    neighbor_idx = idx(i, j + 1)
+                    weight = w_pq[i, j, 1] / w_p[i, j]
+                    W_sparse[current_idx, neighbor_idx] = weight
+                # 下方
+                if i < H - 1:
+                    neighbor_idx = idx(i + 1, j)
+                    weight = w_pq[i, j, 2] / w_p[i, j]
+                    W_sparse[current_idx, neighbor_idx] = weight
+                # 左方
+                if j > 0:
+                    neighbor_idx = idx(i, j - 1)
+                    weight = w_pq[i, j, 3] / w_p[i, j]
+                    W_sparse[current_idx, neighbor_idx] = weight
+        
+        # 转换为CSR格式以提高计算效率
+        W_csr = W_sparse.tocsr()
+        D_diag = np.array(W_csr.sum(axis=1)).flatten()
+        D_diag = np.maximum(D_diag, 1e-8)
+        D_inv = np.diag(1.0 / D_diag)
+        S = D_inv @ W_csr
+
+        return S
+    
+    def llgc_iteration(self, L_prev: np.ndarray, S, mu: float, Y: np.ndarray) -> np.ndarray:
+        """
+        执行一次LLGC迭代 L_p^D(t) = μ_p * S_p * L^D(t-1) + (1 - mu_p) * Y_p
+        
+        参数:
+            L_prev: 上一轮迭代的亮度差值估计值, shape (N,)
+            S: 仿射矩阵, shape (N, N)
+            mu: 正则化系数
+            Y: 先验观测值, shape (N,)
+        返回:
+            L_new: 更新后的亮度差值, shape (N,)
+        """
+        S_L = S @ L_prev
+        L_new = mu * S_L + (1 - mu) * Y
+        return L_new
+    
+    def compose(self,
+                source_rgb: np.ndarray,
+                target_rgb: np.ndarray,
+                foreground_mask: np.ndarray,
+                boundary_mask: np.ndarray) -> np.ndarray:
+        """
+        执行光照一致图像合成
+        
+        参数:
+            source_rgb: 源图像RGB, shape (H, W, 3), 范围 [0, 1]
+            target_rgb: 目标图像RGB, shape (H, W, 3), 范围 [0, 1]
+            foreground_mask: 前景掩码, shape (H, W), True表示前景像素
+            boundary_mask: 边界掩码, shape (H, W), True表示边界像素
+        返回:
+            result_rgb: 合成图像RGB, shape (H, W, 3), 范围 [0, 1]
+        """
+        # RGB -> Lab 转换
+        L_source, a_source, b_source = self.color_converter.rgb_to_lab(source_rgb)
+        L_target, _, _ = self.color_converter.rgb_to_lab(target_rgb)
+        
+        # 获取边界和前景区域的像素
+        boundary_indices = np.where(boundary_mask)
+        
+        # Step 1: 计算亮度差异均值 M^T - M^S
+        L_source_boundary = L_source[boundary_indices]
+        L_target_boundary = L_target[boundary_indices]
+        M_S = self.hist_aligner.compute_histogram_mean(L_source_boundary)
+        M_T = self.hist_aligner.compute_histogram_mean(L_target_boundary)
+        M_diff = M_T - M_S
+        
+        # Step 2-3: 计算参数σ
+        sigma = self.gradient_calc.compute_sigma_from_boundary(
+            L_source_boundary, L_target_boundary
+        )
+        
+        # Step 4: 计算梯度保持权重矩阵 w_pq 和归一化向量 w_p
+        w_pq, w_p = self.gradient_calc.compute_weights(L_source, sigma)
+        
+        # Step 5-6: 计算仿射矩阵 S
+        S = self.compute_L_smooth_matrix(w_pq, w_p)
+        
+        # Step 7: 计算先验观测值 Y
+        Y = self.hist_aligner.compute_prior_difference(
+            L_source, L_target, boundary_mask, M_diff
+        )
+        
+        # Step 8: 计算自适应正则化系数 μ
+        mu = self.adaptive_calc.compute_mu(w_pq, boundary_mask, foreground_mask)
+        
+        # Step 9: LLGC迭代求解 L^D
+        H, W = L_source.shape
+        N = H * W
+        Y_flat = Y.flatten()
+        
+        L_D_flat = np.zeros(N)
+        
+        for iteration in range(self.max_iter):
+            L_D_prev = L_D_flat.copy()
+            L_D_flat = self.llgc_iteration(L_D_flat, S, mu, Y_flat)
+            
+            diff_norm = np.linalg.norm(L_D_flat - L_D_prev)
+            if diff_norm < self.tolerance:
+                print(f"LLGC收敛于第 {iteration} 次迭代")
+                break
+        
+        # Step 10: 计算最终亮度值 L^C = L^D + L^S
+        L_D = L_D_flat.reshape(H, W)
+        L_composite = L_D + L_source
+        
+        # 裁剪亮度到有效范围 [0, 100]
+        L_composite = np.clip(L_composite, 0, 100)
+        
+        # Lab -> RGB 转换
+        result_rgb = self.color_converter.lab_to_rgb(L_composite, a_source, b_source)
+        
+        return result_rgb
+
+
+# ==================== 使用示例 ====================
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    
+    compositor = MRFImageCompositor(max_iter=500, tolerance=1e-5)
+    
+    H, W = 100, 100
+    source_rgb = np.zeros((H, W, 3))
+
+    Y_grid, X_grid = np.ogrid[:H, :W]
+    center_y, center_x = H // 2, W // 2
+    radius = 30
+    circle_mask = (X_grid - center_x)**2 + (Y_grid - center_y)**2 <= radius**2
+
+    source_rgb[circle_mask] = [0.3, 0.3, 0.3]
+    source_rgb[~circle_mask] = [1.0, 1.0, 1.0]
+    
+    target_rgb = np.ones((H, W, 3)) * 0.8
+    
+    foreground_mask = circle_mask
+    
+    from scipy.ndimage import binary_dilation
+    kernel = np.ones((3, 3))
+    dilated = binary_dilation(foreground_mask, kernel)
+    boundary_mask = dilated & ~foreground_mask
+    
+    print(f"图像尺寸: {H}x{W}")
+    print(f"前景像素数: {np.sum(foreground_mask)}")
+    print(f"边界像素数: {np.sum(boundary_mask)}")
+    
+    print("\n开始图像合成...")
+    result_rgb = compositor.compose(source_rgb, target_rgb, foreground_mask, boundary_mask)
+    print("合成完成!")
+    
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(source_rgb)
+    axes[0].set_title("Source Image")
+    axes[0].axis('off')
+    
+    axes[1].imshow(target_rgb)
+    axes[1].set_title("Target Image")
+    axes[1].axis('off')
+    
+    axes[2].imshow(result_rgb)
+    axes[2].set_title("Composition Result")
+    axes[2].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
