@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "computer-graphics-yolo-env"
+version = "0.1.0"
+description = "Isolated YOLO environment for local person instance-mask generation."
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy>=1.26,<2",
+    "pillow>=10",
+    "torch==2.10.0",
+    "torchvision>=0.25.0",
+    "tqdm>=4.66",
+    "ultralytics>=8.3",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
