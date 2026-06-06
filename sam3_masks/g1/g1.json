@@ -1,0 +1,425 @@
+{
+  "image": "material/g1.jpg",
+  "prompt": "person",
+  "width": 5760,
+  "height": 3840,
+  "inference_width": 1600,
+  "inference_height": 1067,
+  "checkpoint": "/root/shared-nvme/ComputerGraphics/Project/models/sam3/sam3.pt",
+  "instances": [
+    {
+      "id": 1,
+      "score": 0.742188,
+      "bbox": [
+        212,
+        2793,
+        112,
+        158
+      ],
+      "box_xyxy": [
+        212.0,
+        2793.0,
+        324.0,
+        2951.0
+      ],
+      "area": 13487,
+      "mask_path": "output/sam3_masks/g1/instances/person_001.png"
+    },
+    {
+      "id": 2,
+      "score": 0.964844,
+      "bbox": [
+        666,
+        1994,
+        684,
+        1734
+      ],
+      "box_xyxy": [
+        666.0,
+        1994.0,
+        1350.0,
+        3728.0
+      ],
+      "area": 433125,
+      "mask_path": "output/sam3_masks/g1/instances/person_002.png"
+    },
+    {
+      "id": 3,
+      "score": 0.960938,
+      "bbox": [
+        983,
+        1717,
+        396,
+        867
+      ],
+      "box_xyxy": [
+        983.0,
+        1717.0,
+        1379.0,
+        2584.0
+      ],
+      "area": 205750,
+      "mask_path": "output/sam3_masks/g1/instances/person_003.png"
+    },
+    {
+      "id": 4,
+      "score": 0.957031,
+      "bbox": [
+        1184,
+        2325,
+        368,
+        1385
+      ],
+      "box_xyxy": [
+        1184.0,
+        2325.0,
+        1552.0,
+        3710.0
+      ],
+      "area": 360960,
+      "mask_path": "output/sam3_masks/g1/instances/person_004.png"
+    },
+    {
+      "id": 5,
+      "score": 0.953125,
+      "bbox": [
+        1289,
+        1731,
+        450,
+        860
+      ],
+      "box_xyxy": [
+        1289.0,
+        1731.0,
+        1739.0,
+        2591.0
+      ],
+      "area": 209141,
+      "mask_path": "output/sam3_masks/g1/instances/person_005.png"
+    },
+    {
+      "id": 6,
+      "score": 0.960938,
+      "bbox": [
+        1541,
+        2307,
+        385,
+        1396
+      ],
+      "box_xyxy": [
+        1541.0,
+        2307.0,
+        1926.0,
+        3703.0
+      ],
+      "area": 379715,
+      "mask_path": "output/sam3_masks/g1/instances/person_006.png"
+    },
+    {
+      "id": 7,
+      "score": 0.949219,
+      "bbox": [
+        1735,
+        1767,
+        429,
+        875
+      ],
+      "box_xyxy": [
+        1735.0,
+        1767.0,
+        2164.0,
+        2642.0
+      ],
+      "area": 214440,
+      "mask_path": "output/sam3_masks/g1/instances/person_007.png"
+    },
+    {
+      "id": 8,
+      "score": 0.957031,
+      "bbox": [
+        1922,
+        2307,
+        533,
+        1382
+      ],
+      "box_xyxy": [
+        1922.0,
+        2307.0,
+        2455.0,
+        3689.0
+      ],
+      "area": 379655,
+      "mask_path": "output/sam3_masks/g1/instances/person_008.png"
+    },
+    {
+      "id": 9,
+      "score": 0.949219,
+      "bbox": [
+        2146,
+        1753,
+        399,
+        813
+      ],
+      "box_xyxy": [
+        2146.0,
+        1753.0,
+        2545.0,
+        2566.0
+      ],
+      "area": 212812,
+      "mask_path": "output/sam3_masks/g1/instances/person_009.png"
+    },
+    {
+      "id": 10,
+      "score": 0.960938,
+      "bbox": [
+        2315,
+        2282,
+        389,
+        1410
+      ],
+      "box_xyxy": [
+        2315.0,
+        2282.0,
+        2704.0,
+        3692.0
+      ],
+      "area": 376565,
+      "mask_path": "output/sam3_masks/g1/instances/person_010.png"
+    },
+    {
+      "id": 11,
+      "score": 0.652344,
+      "bbox": [
+        2513,
+        835,
+        471,
+        1130
+      ],
+      "box_xyxy": [
+        2513.0,
+        835.0,
+        2984.0,
+        1965.0
+      ],
+      "area": 285955,
+      "mask_path": "output/sam3_masks/g1/instances/person_011.png"
+    },
+    {
+      "id": 12,
+      "score": 0.941406,
+      "bbox": [
+        2563,
+        1745,
+        281,
+        799
+      ],
+      "box_xyxy": [
+        2563.0,
+        1745.0,
+        2844.0,
+        2544.0
+      ],
+      "area": 152181,
+      "mask_path": "output/sam3_masks/g1/instances/person_012.png"
+    },
+    {
+      "id": 13,
+      "score": 0.960938,
+      "bbox": [
+        2675,
+        2221,
+        435,
+        1471
+      ],
+      "box_xyxy": [
+        2675.0,
+        2221.0,
+        3110.0,
+        3692.0
+      ],
+      "area": 382273,
+      "mask_path": "output/sam3_masks/g1/instances/person_013.png"
+    },
+    {
+      "id": 14,
+      "score": 0.941406,
+      "bbox": [
+        2822,
+        1735,
+        353,
+        874
+      ],
+      "box_xyxy": [
+        2822.0,
+        1735.0,
+        3175.0,
+        2609.0
+      ],
+      "area": 166669,
+      "mask_path": "output/sam3_masks/g1/instances/person_014.png"
+    },
+    {
+      "id": 15,
+      "score": 0.964844,
+      "bbox": [
+        3092,
+        2307,
+        422,
+        1396
+      ],
+      "box_xyxy": [
+        3092.0,
+        2307.0,
+        3514.0,
+        3703.0
+      ],
+      "area": 415509,
+      "mask_path": "output/sam3_masks/g1/instances/person_015.png"
+    },
+    {
+      "id": 16,
+      "score": 0.949219,
+      "bbox": [
+        3154,
+        1785,
+        324,
+        777
+      ],
+      "box_xyxy": [
+        3154.0,
+        1785.0,
+        3478.0,
+        2562.0
+      ],
+      "area": 159917,
+      "mask_path": "output/sam3_masks/g1/instances/person_016.png"
+    },
+    {
+      "id": 17,
+      "score": 0.929688,
+      "bbox": [
+        3467,
+        1756,
+        342,
+        792
+      ],
+      "box_xyxy": [
+        3467.0,
+        1756.0,
+        3809.0,
+        2548.0
+      ],
+      "area": 166001,
+      "mask_path": "output/sam3_masks/g1/instances/person_017.png"
+    },
+    {
+      "id": 18,
+      "score": 0.960938,
+      "bbox": [
+        3503,
+        2282,
+        417,
+        1414
+      ],
+      "box_xyxy": [
+        3503.0,
+        2282.0,
+        3920.0,
+        3696.0
+      ],
+      "area": 411396,
+      "mask_path": "output/sam3_masks/g1/instances/person_018.png"
+    },
+    {
+      "id": 19,
+      "score": 0.832031,
+      "bbox": [
+        3794,
+        1756,
+        360,
+        882
+      ],
+      "box_xyxy": [
+        3794.0,
+        1756.0,
+        4154.0,
+        2638.0
+      ],
+      "area": 196710,
+      "mask_path": "output/sam3_masks/g1/instances/person_019.png"
+    },
+    {
+      "id": 20,
+      "score": 0.960938,
+      "bbox": [
+        3924,
+        2221,
+        493,
+        1497
+      ],
+      "box_xyxy": [
+        3924.0,
+        2221.0,
+        4417.0,
+        3718.0
+      ],
+      "area": 441695,
+      "mask_path": "output/sam3_masks/g1/instances/person_020.png"
+    },
+    {
+      "id": 21,
+      "score": 0.960938,
+      "bbox": [
+        4151,
+        1634,
+        453,
+        882
+      ],
+      "box_xyxy": [
+        4151.0,
+        1634.0,
+        4604.0,
+        2516.0
+      ],
+      "area": 228107,
+      "mask_path": "output/sam3_masks/g1/instances/person_021.png"
+    },
+    {
+      "id": 22,
+      "score": 0.949219,
+      "bbox": [
+        4370,
+        2203,
+        440,
+        1525
+      ],
+      "box_xyxy": [
+        4370.0,
+        2203.0,
+        4810.0,
+        3728.0
+      ],
+      "area": 408219,
+      "mask_path": "output/sam3_masks/g1/instances/person_022.png"
+    },
+    {
+      "id": 23,
+      "score": 0.773438,
+      "bbox": [
+        5692,
+        2771,
+        68,
+        205
+      ],
+      "box_xyxy": [
+        5692.0,
+        2771.0,
+        5760.0,
+        2976.0
+      ],
+      "area": 11464,
+      "mask_path": "output/sam3_masks/g1/instances/person_023.png"
+    }
+  ]
+}

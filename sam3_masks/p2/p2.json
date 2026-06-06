@@ -1,0 +1,29 @@
+{
+  "image": "material/p2.jpg",
+  "prompt": "person",
+  "width": 3513,
+  "height": 5270,
+  "inference_width": 1067,
+  "inference_height": 1600,
+  "checkpoint": "/root/shared-nvme/ComputerGraphics/Project/models/sam3/sam3.pt",
+  "instances": [
+    {
+      "id": 1,
+      "score": 0.96875,
+      "bbox": [
+        244,
+        1927,
+        3269,
+        3343
+      ],
+      "box_xyxy": [
+        244.0,
+        1927.0,
+        3513.0,
+        5270.0
+      ],
+      "area": 6865694,
+      "mask_path": "output/sam3_masks/p2/instances/person_001.png"
+    }
+  ]
+}
