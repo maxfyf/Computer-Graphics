@@ -14,7 +14,7 @@ dependencies = [
     "pillow>=10",
     "psutil>=5.9",
     "pycocotools>=2.0.8",
-    "sam3 @ file:///home/caiyy/FDU/year3/ComputerGraphics/Project/sam3",
+    "sam3",
     "scikit-image>=0.23",
     "scipy>=1.12",
     "setuptools>=69,<81",
@@ -31,6 +31,7 @@ py-modules = ["ImageCompositor", "PersonMetadataExtractor"]
 packages = ["scripts"]
 
 [tool.uv.sources]
+sam3 = { path = "../sam3" }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 
