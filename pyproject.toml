@@ -9,6 +9,7 @@ description = "Computer graphics course project tools for image compositing and 
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "einops>=0.7",
+    "huggingface_hub[cli]>=0.31",
     "matplotlib>=3.8",
     "numpy>=1.26,<2",
     "pillow>=10",
