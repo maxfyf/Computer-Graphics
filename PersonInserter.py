@@ -725,16 +725,59 @@ def _resize_bool(mask: np.ndarray, new_w: int, new_h: int) -> np.ndarray:
     return np.asarray(pil) > 0
 
 
+def _placed_source_crop(
+    patch: CandidatePatch,
+    paste_box: tuple[int, int, int, int],
+    dtype: np.dtype,
+) -> tuple[np.ndarray, np.ndarray]:
+    """在 paste_box 坐标内重建原分辨率 source crop 和 source mask。"""
+    oy0, ox0, oy1, ox1 = paste_box
+    out_h, out_w = oy1 - oy0, ox1 - ox0
+    source_crop_full = np.zeros((out_h, out_w, 3), dtype=dtype)
+    source_mask_full = np.zeros((out_h, out_w), dtype=bool)
+    sh, sw = patch.source_rgb.shape[:2]
+    py, px = patch.offset
+    sy0 = oy0 - py
+    sx0 = ox0 - px
+    sy1 = oy1 - py
+    sx1 = ox1 - px
+    sy0c, sx0c = max(0, sy0), max(0, sx0)
+    sy1c, sx1c = min(sh, sy1), min(sw, sx1)
+    if sy1c > sy0c and sx1c > sx0c:
+        ty_off = sy0c - sy0
+        tx_off = sx0c - sx0
+        source_crop_full[ty_off:ty_off + (sy1c - sy0c),
+                         tx_off:tx_off + (sx1c - sx0c)] = patch.source_rgb[sy0c:sy1c, sx0c:sx1c]
+        source_mask_full[ty_off:ty_off + (sy1c - sy0c),
+                         tx_off:tx_off + (sx1c - sx0c)] = patch.source_mask[sy0c:sy1c, sx0c:sx1c]
+    return source_crop_full, source_mask_full
+
+
+def _soft_alpha(mask: np.ndarray, feather_px: float) -> np.ndarray:
+    """从二值 mask 生成边缘软 alpha，减少 SAM/resize mask 台阶。"""
+    if feather_px <= 0 or not mask.any():
+        return mask.astype(np.float32)
+    inside = ndimage.distance_transform_edt(mask)
+    outside = ndimage.distance_transform_edt(~mask)
+    signed = inside - outside
+    alpha = np.clip((signed + feather_px) / (2.0 * feather_px), 0.0, 1.0)
+    return alpha.astype(np.float32)
+
+
 def compose_and_paste(
     group_rgb: np.ndarray,
     patch: CandidatePatch,
     margin: int = 8,
     compositor: Any | None = None,
     max_crop_size: int = 200,
+    preserve_detail: bool = True,
+    feather_px: float = 2.0,
 ) -> np.ndarray:
     """裁出 patch 的 compose 区域，调 MRFImageCompositor.compose，贴回 group_rgb。
 
     max_crop_size: 裁片最长边超过此值时先下采样到 ≤ max_crop_size，compose 完上采样回原大小。
+    preserve_detail: 下采样合成时只取低分辨率光照/颜色修正场，最终应用到原分辨率 source，避免人像细节被缩放抹掉。
+    feather_px: 贴回时的 mask 边缘羽化半径；默认 2px 抑制锯齿。
     """
     from ImageCompositor import MRFImageCompositor as _MC
 
@@ -755,8 +798,18 @@ def compose_and_paste(
 
     oy0, ox0, oy1, ox1 = paste_box
     out_h, out_w = oy1 - oy0, ox1 - ox0
+    source_crop_full: np.ndarray | None = None
+    source_mask_full: np.ndarray | None = None
     if downscale < 1.0 and composited.shape[:2] != (out_h, out_w):
-        composited = _resize_f32(composited, out_w, out_h)
+        if preserve_detail:
+            source_crop_full, source_mask_full = _placed_source_crop(patch, paste_box, group_rgb.dtype)
+            source_low_full = _resize_f32(source_crop_full, composited.shape[1], composited.shape[0])
+            # 低分辨率 MRF 的结果作为平滑修正场，避免直接放大低分辨率人像导致糊。
+            gain_low = (composited + 1e-4) / (source_low_full + 1e-4)
+            gain_full = _resize_f32(np.clip(gain_low, 0.25, 4.0), out_w, out_h)
+            composited = np.clip(source_crop_full * gain_full, 0.0, 1.0)
+        else:
+            composited = _resize_f32(composited, out_w, out_h)
     if downscale < 1.0 and fg.shape != (out_h, out_w):
         fg_full = _resize_bool(fg, out_w, out_h)
     else:
@@ -766,6 +819,11 @@ def compose_and_paste(
     # （MRF 在前景外的源是 0/black，会被算进 L_composite 变成怪异颜色）
     out = group_rgb.copy()
     region = out[oy0:oy1, ox0:ox1]
-    mask_3d = fg_full[..., None]
-    out[oy0:oy1, ox0:ox1] = np.where(mask_3d, composited, region)
+    if preserve_detail and source_mask_full is not None:
+        refined_full = patch.refined_mask[oy0:oy1, ox0:ox1]
+        paste_mask = source_mask_full & refined_full
+    else:
+        paste_mask = fg_full
+    alpha = _soft_alpha(paste_mask, feather_px)[..., None]
+    out[oy0:oy1, ox0:ox1] = composited * alpha + region * (1.0 - alpha)
     return out

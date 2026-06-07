@@ -22,7 +22,7 @@ person_metadata/             # 每张图的元数据（bbox / face / contour / m
   g1.json g2.json g3.json
   p1.json p2.json p3.json
 
-sam3_masks/                  # 可选：SAM3 instance mask（每人一帧 PNG）
+sam3_masks/                  # SAM3 instance mask（每人一帧 PNG）
   g1/
     g1.json                  # metadata: 每人的 score / bbox / mask_path
     instances/
@@ -65,6 +65,29 @@ uv sync
 `torch` 仍然走官方 CUDA 12.8 源。
 
 如果你本地有同级 `../sam3` 仓库，可在 `pyproject.toml` 中恢复对应的 `tool.uv.sources` 配置。
+
+## HSV 色调对齐
+
+`ImageCompositor.py` 主要处理 Lab 亮度一致性。若单人照和合照人物存在冷暖、色相或饱和度差异，可先运行 HSV 色调对齐工具，只用 mask 内的人物像素做统计，避免背景颜色污染参考值。
+
+```bash
+uv run python scripts/align_tone_hsv.py \
+  --source-image material/p1.jpg \
+  --source-mask sam3_masks/p1/instances/person_001.png \
+  --target-image material/g1.jpg \
+  --target-mask-glob 'sam3_masks/g1/instances/person_*.png' \
+  --output-image output/tone_align/g1_p1_hsv.png \
+  --report output/tone_align/g1_p1_hsv_report.json
+```
+
+该工具也已注册为 orchestrator 工具：
+
+```bash
+cd Computer-Graphics
+conda run -n check-numpy python orchestrator/scripts/run_tool.py compositing.align_tone_hsv
+```
+
+完整 ReAct 流程会在候选插入后调用 `compositing.align_tone_hsv`，并由 `tone_verifier.py` 检查像素数、hue shift 和 saturation ratio 是否在安全范围内。
 
 ## 快速开始
 
@@ -136,6 +159,8 @@ def compose_and_paste(
     margin=8,            # 裁切时在 contour 外留的像素
     compositor=None,     # 复用已有的 MRFImageCompositor
     max_crop_size=200,   # 裁片最长边超过此值先下采样；防 MRF 爆内存
+    preserve_detail=True,# 下采样只算修正场，最终保留原分辨率人像细节
+    feather_px=2.0,      # 贴回时 mask 边缘羽化半径；减少锯齿和硬边
 ) -> np.ndarray         # 合成后的 (H, W, 3) float32 [0, 1]
 ```
 
@@ -198,7 +223,13 @@ def compose_and_paste(
 
 ### max_crop_size
 
-`ImageCompositor.compose` 用稠密 N×N 仿射矩阵（N = H×W），大裁片会爆内存。`max_crop_size=200`（默认）会把裁片下采样到最长边 ≤ 200 px，compose 完上采样回原大小。代价是边缘细节略糊，但能跑。
+`ImageCompositor.compose` 用稠密 N×N 仿射矩阵（N = H×W），大裁片会爆内存。`max_crop_size=200`（默认）会把裁片下采样到最长边 ≤ 200 px 来计算平滑光照/颜色修正场。
+
+默认 `preserve_detail=True` 时，低分辨率 MRF 结果不会被直接放大贴回，而是先转成相对 source 的修正场，再应用到原分辨率人像裁片。这样保留衣服、头发和脸部细节，同时仍然避免大矩阵爆内存。如果为了复现旧行为，可以传 `preserve_detail=False`。
+
+### feather_px
+
+SAM3 mask 和缩放后的二值 mask 边缘都是硬边，直接 `np.where(mask, person, group)` 会产生锯齿。默认 `feather_px=2.0` 会基于原分辨率贴回 mask 生成 soft alpha，只在边缘 2px 左右过渡，主体区域仍保持完全不透明。若需要硬边调试，可设为 `0`。
 
 ## 已知限制
 

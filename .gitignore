@@ -9,3 +9,4 @@ models/
 sam3_masks/
 person_metadata/
 material/
+.DS_Store

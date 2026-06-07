@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 generate-sam3-masks = "scripts.generate_sam3_masks:main"
+align-tone-hsv = "scripts.align_tone_hsv:main"
 
 [tool.setuptools]
 py-modules = ["ImageCompositor", "PersonMetadataExtractor"]
