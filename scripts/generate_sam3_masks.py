@@ -5,6 +5,10 @@ on a resized copy of each image, then restores each binary mask to the original
 image size before saving. This avoids the worst memory blow-up from returning
 many full-resolution masks at once.
 
+SAM3 is an optional dependency; only install it when you need to generate masks
+from scratch. If you already have `person_metadata/` and `sam3_masks/`, you can
+skip this script.
+
 Example:
     python scripts/generate_sam3_masks.py material/*.jpg \
         --checkpoint /path/to/sam3.pt \

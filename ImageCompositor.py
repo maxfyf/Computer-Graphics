@@ -1,5 +1,6 @@
 ﻿"""基于马尔科夫随机场的光照一致图像合成方法"""
 import numpy as np
+from collections import Counter
 from typing import Tuple
                           
 # RGB与Lab色彩空间转换器 (基于sRGB和D65白点)
@@ -206,6 +207,67 @@ class HistogramAligner:
         return weighted_sum / total_pixels
     
     @staticmethod
+    def compute_k_means(L: np.ndarray, k: int = 6, max_iters: int = 100, tol: float = 1e-4) -> np.ndarray:
+        """
+        对面部像素点光强L构成的一维浮点数组进行K-means聚类，并返回包含最多元素的簇的所有数据点。
+        
+        参数:
+            L: np.ndarray, 一维浮点型数组
+            k: int, 聚类数量
+            max_iters: int, 最大迭代次数
+            tol: float, 质心变化容忍度，用于判断收敛
+        
+        返回:
+            majority_cluster: np.ndarray, 元素最多的聚簇中的所有数据点
+        """
+        if L.size <= k:
+            return L
+
+        np.random.seed(42)
+        centroids = np.zeros(k, dtype=np.float64)
+        centroids[0] = L[np.random.randint(len(L))]
+        
+        for i in range(1, k):
+            distances = np.min(np.abs(L[:, np.newaxis] - centroids[:i]), axis=1)
+            distances_squared = distances ** 2
+            
+            if np.sum(distances_squared) == 0:
+                remaining_indices = list(set(range(len(L))) - set(np.where(distances == 0)[0]))
+                if remaining_indices:
+                    centroids[i] = L[np.random.choice(remaining_indices)]
+                else:
+                    centroids[i] = L[np.random.randint(len(L))]
+            else:
+                probabilities = distances_squared / np.sum(distances_squared)
+                centroids[i] = L[np.random.choice(len(L), p=probabilities)]
+        
+        for _ in range(max_iters):
+            distances = np.abs(L[:, np.newaxis] - centroids)
+            labels = np.argmin(distances, axis=1)
+            
+            new_centroids = np.zeros(k, dtype=np.float64)
+            for i in range(k):
+                cluster_points = L[labels == i]
+                if len(cluster_points) > 0:
+                    new_centroids[i] = np.mean(cluster_points)
+                else:
+                    new_centroids[i] = L[np.random.randint(len(L))]
+            
+            if np.all(np.abs(new_centroids - centroids) < tol):
+                break
+            
+            centroids = new_centroids
+        
+        final_distances = np.abs(L[:, np.newaxis] - centroids)
+        final_labels = np.argmin(final_distances, axis=1)
+        
+        label_counts = Counter(final_labels)
+        majority_label = max(label_counts, key=lambda i: label_counts[i])
+        majority_cluster = L[final_labels == majority_label]
+        
+        return majority_cluster
+    
+    @staticmethod
     def compute_prior_difference(L_source: np.ndarray,
                                   L_target: np.ndarray,
                                   boundary_mask: np.ndarray,
@@ -281,7 +343,7 @@ class AdaptiveWeightCalculator:
 
 # 基于马尔科夫随机场的光照一致图像合成器
 class MRFImageCompositor:            
-    def __init__(self, max_iter: int = 10000, tolerance: float = 1e-6):
+    def __init__(self, max_iter: int = 100, tolerance: float = 1e-6):
         """
         初始化合成器
         
@@ -364,12 +426,44 @@ class MRFImageCompositor:
         S_L = S @ L_prev
         L_new = mu * S_L + (1 - mu) * Y
         return L_new
-    
+
+    def _rgb_samples_to_luminance(self, rgb_samples: np.ndarray) -> np.ndarray:
+        """
+        将任意形状的 RGB 样本数组转换为扁平的 Lab 亮度分量数组。
+
+        参数:
+            rgb_samples: RGB 样本数组, shape 可以是 (N, 3) 或 (H, W, 3)
+        返回:
+            L_values: 亮度数组, shape (num_samples,)
+        """
+        rgb_samples = np.asarray(rgb_samples)
+        if rgb_samples.size == 0:
+            return np.array([], dtype=float)
+
+        if rgb_samples.ndim == 1:
+            rgb_samples = rgb_samples.reshape(1, 1, 3)
+        elif rgb_samples.ndim == 2:
+            if rgb_samples.shape[1] != 3:
+                raise ValueError("source_face_samples/target_face_samples 必须为 (N, 3) 或 (H, W, 3) 形式的 RGB 样本数组")
+            rgb_samples = rgb_samples.reshape(-1, 1, 3)
+        elif rgb_samples.ndim == 3:
+            if rgb_samples.shape[2] != 3:
+                raise ValueError("RGB 样本数组的最后一维必须为 3")
+        else:
+            raise ValueError("RGB 样本数组维度必须为 1、2 或 3")
+
+        L_values, _, _ = self.color_converter.rgb_to_lab(rgb_samples)
+        return L_values.flatten()
+
     def compose(self,
                 source_rgb: np.ndarray,
                 target_rgb: np.ndarray,
                 foreground_mask: np.ndarray,
-                boundary_mask: np.ndarray) -> np.ndarray:
+                boundary_mask: np.ndarray,
+                source_face_rgb: np.ndarray,
+                target_face_rgb: list[np.ndarray],
+                optimize_sampling: bool = True,
+                apply_k_means: bool = False) -> np.ndarray:
         """
         执行光照一致图像合成
         
@@ -378,21 +472,39 @@ class MRFImageCompositor:
             target_rgb: 目标图像RGB, shape (H, W, 3), 范围 [0, 1]
             foreground_mask: 前景掩码, shape (H, W), True表示前景像素
             boundary_mask: 边界掩码, shape (H, W), True表示边界像素
+            source_face_samples: 源图像中人脸采样像素点的 RGB 数组
+            target_face_samples: 目标图像中人脸采样像素点的 RGB 数组
         返回:
             result_rgb: 合成图像RGB, shape (H, W, 3), 范围 [0, 1]
         """
         # RGB -> Lab 转换
         L_source, a_source, b_source = self.color_converter.rgb_to_lab(source_rgb)
         L_target, _, _ = self.color_converter.rgb_to_lab(target_rgb)
-        
-        # 获取边界和前景区域的像素
+
+        L_source_face_lab = self.color_converter.rgb_to_lab(source_face_rgb)[0].flatten()
+        L_target_face_lab = [self.color_converter.rgb_to_lab(target_rgb)[0].flatten() for target_rgb in target_face_rgb]
+        # print(f"Average Lightness: target {np.mean(L_target_face_lab[0])}, source {np.mean(L_source_face_lab)}")
+
         boundary_indices = np.where(boundary_mask)
-        
-        # Step 1: 计算亮度差异均值 M^T - M^S
         L_source_boundary = L_source[boundary_indices]
         L_target_boundary = L_target[boundary_indices]
-        M_S = self.hist_aligner.compute_histogram_mean(L_source_boundary)
-        M_T = self.hist_aligner.compute_histogram_mean(L_target_boundary)
+
+        # Step 1: 计算亮度差异均值 M^T - M^S
+        if optimize_sampling:
+            if apply_k_means:
+                L_source_face = self.hist_aligner.compute_k_means(L_source_face_lab)
+                L_target_face = np.concatenate([self.hist_aligner.compute_k_means(L_target_lab) for L_target_lab in L_target_face_lab])
+                M_S = self.hist_aligner.compute_histogram_mean(L_source_face) / L_source_face.size / 100 * 255
+                M_T = self.hist_aligner.compute_histogram_mean(L_target_face) / L_target_face.size / 100 * 255
+            else:
+                L_source_face = L_source_face_lab.flatten()
+                L_target_face = np.concatenate([L_target_lab.flatten() for L_target_lab in L_target_face_lab])
+                M_S = np.mean(L_source_face) / 100 * 255
+                M_T = np.mean(L_target_face) / 100 * 255
+        else:
+            M_S = self.hist_aligner.compute_histogram_mean(L_source_boundary)
+            M_T = self.hist_aligner.compute_histogram_mean(L_target_boundary)
+        # print(f"M_T = {M_T}, M_S = {M_S}")
         M_diff = M_T - M_S
         
         # Step 2-3: 计算参数σ
@@ -441,54 +553,3 @@ class MRFImageCompositor:
         result_rgb = self.color_converter.lab_to_rgb(L_composite, a_source, b_source)
         
         return result_rgb
-
-
-# ==================== 使用示例 ====================
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    
-    compositor = MRFImageCompositor(max_iter=500, tolerance=1e-5)
-    
-    H, W = 100, 100
-    source_rgb = np.zeros((H, W, 3))
-
-    Y_grid, X_grid = np.ogrid[:H, :W]
-    center_y, center_x = H // 2, W // 2
-    radius = 30
-    circle_mask = (X_grid - center_x)**2 + (Y_grid - center_y)**2 <= radius**2
-
-    source_rgb[circle_mask] = [0.3, 0.3, 0.3]
-    source_rgb[~circle_mask] = [1.0, 1.0, 1.0]
-    
-    target_rgb = np.ones((H, W, 3)) * 0.8
-    
-    foreground_mask = circle_mask
-    
-    from scipy.ndimage import binary_dilation
-    kernel = np.ones((3, 3))
-    dilated = binary_dilation(foreground_mask, kernel)
-    boundary_mask = dilated & ~foreground_mask
-    
-    print(f"图像尺寸: {H}x{W}")
-    print(f"前景像素数: {np.sum(foreground_mask)}")
-    print(f"边界像素数: {np.sum(boundary_mask)}")
-    
-    print("\n开始图像合成...")
-    result_rgb = compositor.compose(source_rgb, target_rgb, foreground_mask, boundary_mask)
-    print("合成完成!")
-    
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    axes[0].imshow(source_rgb)
-    axes[0].set_title("Source Image")
-    axes[0].axis('off')
-    
-    axes[1].imshow(target_rgb)
-    axes[1].set_title("Target Image")
-    axes[1].axis('off')
-    
-    axes[2].imshow(result_rgb)
-    axes[2].set_title("Composition Result")
-    axes[2].axis('off')
-    
-    plt.tight_layout()
-    plt.show()
