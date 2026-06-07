@@ -1,0 +1,4 @@
+[submodule "orchestrator"]
+	path = orchestrator
+	url = git@github.com:JurFal/GroupPhotoOrch.git
+	branch = main

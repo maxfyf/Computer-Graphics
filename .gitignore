@@ -6,3 +6,6 @@ checkpoints/
 models/
 *.pt
 *.pth
+sam3_masks/
+person_metadata/
+material/
