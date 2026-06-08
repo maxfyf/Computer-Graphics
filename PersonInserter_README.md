@@ -34,7 +34,7 @@ sam3_masks/                  # SAM3 instance mask（每人一帧 PNG）
 如果你已经有 `person_metadata/`，可以直接跳到后续步骤；否则按下面顺序处理：
 
 ```bash
-# 1) SAM3 给合照里每个人出 mask（需要 GPU）
+# 1) SAM3 给合照里每个人出 mask（需要 GPU）（依赖可选）
 uv run python scripts/generate_sam3_masks.py material/g*.jpg \
     --checkpoint /path/to/sam3.pt \
     --output-dir sam3_masks
