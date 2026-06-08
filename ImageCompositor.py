@@ -463,7 +463,7 @@ class MRFImageCompositor:
                 source_face_rgb: np.ndarray,
                 target_face_rgb: list[np.ndarray],
                 optimize_sampling: bool = True,
-                apply_k_means: bool = False) -> np.ndarray:
+                apply_k_means: bool = True) -> np.ndarray:
         """
         执行光照一致图像合成
         
@@ -494,17 +494,17 @@ class MRFImageCompositor:
             if apply_k_means:
                 L_source_face = self.hist_aligner.compute_k_means(L_source_face_lab)
                 L_target_face = np.concatenate([self.hist_aligner.compute_k_means(L_target_lab) for L_target_lab in L_target_face_lab])
-                M_S = self.hist_aligner.compute_histogram_mean(L_source_face) / L_source_face.size / 100 * 255
-                M_T = self.hist_aligner.compute_histogram_mean(L_target_face) / L_target_face.size / 100 * 255
+                M_S = self.hist_aligner.compute_histogram_mean(L_source_face)
+                M_T = self.hist_aligner.compute_histogram_mean(L_target_face)
             else:
                 L_source_face = L_source_face_lab.flatten()
                 L_target_face = np.concatenate([L_target_lab.flatten() for L_target_lab in L_target_face_lab])
-                M_S = np.mean(L_source_face) / 100 * 255
-                M_T = np.mean(L_target_face) / 100 * 255
+                M_S = self.hist_aligner.compute_histogram_mean(L_source_face)
+                M_T = self.hist_aligner.compute_histogram_mean(L_target_face)
         else:
             M_S = self.hist_aligner.compute_histogram_mean(L_source_boundary)
             M_T = self.hist_aligner.compute_histogram_mean(L_target_boundary)
-        # print(f"M_T = {M_T}, M_S = {M_S}")
+        print(f"M_T = {M_T}, M_S = {M_S}")
         M_diff = M_T - M_S
         
         # Step 2-3: 计算参数σ
