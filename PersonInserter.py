@@ -43,6 +43,7 @@ class GapInfo:
     face_w: float              # 目标 face w
     bbox: list[int]            # [x0, y0, x1, y1] 空位 bbox
     width: float               # 空位水平宽度
+    side_score: float = 0.0    # 越靠人群侧边越接近 1，中心越接近 0
 
 
 @dataclass
@@ -60,6 +61,10 @@ class CandidatePatch:
     gap_bbox: list[int]                # [x0, y0, x1, y1] target 坐标
     score: float
     neighbors: list[int]
+    original_source_mask_area: int = 0
+    occluded_source_pixels: int = 0
+    occlusion_ratio: float = 0.0
+    side_score: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -215,6 +220,25 @@ def _find_row_gaps(row: list[dict[str, Any]], image_width: int) -> list[GapInfo]
     return gaps
 
 
+def _annotate_side_scores(rows: list[list[dict[str, Any]]], gaps: list[GapInfo]) -> None:
+    """给 row gap 标注侧边分数：行首/行尾最高，行中心最低。"""
+    row_bounds: dict[int, tuple[float, float]] = {}
+    for r_idx, row in enumerate(rows):
+        if not row:
+            continue
+        xs = [float(p["face"]["center"][0]) for p in row]
+        row_bounds[r_idx] = (min(xs), max(xs))
+
+    for gap in gaps:
+        left_x, right_x = row_bounds.get(gap.row_index, (gap.face_x, gap.face_x))
+        row_width = max(1.0, right_x - left_x)
+        center = (left_x + right_x) / 2.0
+        normalized = min(1.0, abs(gap.face_x - center) / (row_width / 2.0))
+        if gap.left_id is None or gap.right_id is None:
+            normalized = 1.0
+        gap.side_score = float(normalized)
+
+
 # ==================== 缩放 & 放置 & 精炼 ====================
 
 def _scale_image_and_mask(
@@ -342,10 +366,10 @@ def _build_row_occlusion(
     size: tuple[int, int],
     dilation_px: int = 4,
 ) -> np.ndarray:
-    """行级 z-order 遮挡：只用 placed 行**之前**的行的 SAM3 instance mask 做遮挡。
+    """行级 z-order 遮挡：用同排和前排的 SAM3 instance mask 做遮挡。
 
-    - 同排 (rank 相等)：不遮挡（侧身挨着）
     - 后排 (rank 较小)：不遮挡（插入人物在前面）
+    - 同排 (rank 相等)：遮挡（避免新人身体盖到已有人的真实 mask 上）
     - 前排 (rank 较大)：用真实 mask 遮挡（他们在前面，盖住插入人物身体）
     """
     H, W = size
@@ -354,8 +378,6 @@ def _build_row_occlusion(
     if placed_row_index not in row_rank:
         return out
     placed_rank = row_rank[placed_row_index]
-    if placed_rank >= max(row_rank.values()):
-        return out  # 已经是最后（最前）一排，无人挡
 
     person_rank: dict[int, int] = {}
     for r_idx, row in enumerate(rows):
@@ -381,7 +403,7 @@ def _build_row_occlusion(
 
     for p in persons:
         pid = p["id"]
-        if pid not in person_rank or person_rank[pid] <= placed_rank:
+        if pid not in person_rank or person_rank[pid] < placed_rank:
             continue
         sid = p.get("source_id", pid)
         mask_file = instances_dir / f"person_{sid:03d}.png"
@@ -423,6 +445,36 @@ def _refine_overlap_mask(
     return out
 
 
+def _remove_occluded_source_pixels(
+    placed_mask: np.ndarray,
+    place_offset: tuple[int, int],
+    occlusion_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """把前排遮挡映射回 source mask，被遮挡的新人物像素直接置 False。"""
+    py, px = place_offset
+    ph, pw = placed_mask.shape
+    H, W = occlusion_mask.shape
+    visible_source = placed_mask.copy()
+    refined = np.zeros((H, W), dtype=bool)
+    y0 = max(0, py)
+    x0 = max(0, px)
+    y1 = min(H, py + ph)
+    x1 = min(W, px + pw)
+    if y1 <= y0 or x1 <= x0:
+        return visible_source, refined, 0
+
+    sy = y0 - py
+    sx = x0 - px
+    region = placed_mask[sy:sy + (y1 - y0), sx:sx + (x1 - x0)]
+    occluded_region = region & occlusion_mask[y0:y1, x0:x1]
+    if occluded_region.any():
+        visible_source[sy:sy + (y1 - y0), sx:sx + (x1 - x0)][occluded_region] = False
+
+    visible_region = visible_source[sy:sy + (y1 - y0), sx:sx + (x1 - x0)]
+    refined[y0:y1, x0:x1] = visible_region
+    return visible_source, refined, int(occluded_region.sum())
+
+
 def _extract_boundary(mask: np.ndarray) -> np.ndarray:
     """从 mask 提取 (N, 2) (y, x) int32 数组。"""
     if not mask.any():
@@ -433,11 +485,19 @@ def _extract_boundary(mask: np.ndarray) -> np.ndarray:
     return np.column_stack([ys, xs]).astype(np.int32)
 
 
-def _score_gap(gap: GapInfo, individual_body_h: float, scale: float) -> float:
+def _score_gap(
+    gap: GapInfo,
+    individual_body_h: float,
+    scale: float,
+    occlusion_ratio: float = 0.0,
+) -> float:
     required = individual_body_h * scale
     if required <= 0:
         return 0.0
-    return gap.width / required
+    geometry_score = gap.width / required
+    side_weight = 0.80 + 0.40 * gap.side_score
+    occlusion_weight = max(0.35, 1.0 - 0.85 * occlusion_ratio)
+    return geometry_score * side_weight * occlusion_weight
 
 
 def _compute_patch(
@@ -476,21 +536,30 @@ def _compute_patch(
     ox = int(round(target_face_x - indiv_face_x * scale))
     oy = int(round(target_face_y - indiv_face_y * scale))
 
-    # 行级 z-order 遮挡：已预计算好（只包含前排的 mask）
-    refined = _refine_overlap_mask(scaled_mask, (oy, ox), occlusion_mask)
+    original_source_mask_area = int(scaled_mask.sum())
+    source_mask, refined, occluded_source_pixels = _remove_occluded_source_pixels(
+        scaled_mask, (oy, ox), occlusion_mask
+    )
     contour = _extract_boundary(refined)
     if len(contour) == 0:
         return None
 
-    score = _score_gap(gap, individual_body_h, scale)
+    occlusion_ratio = (
+        occluded_source_pixels / original_source_mask_area
+        if original_source_mask_area > 0 else 1.0
+    )
+    score = _score_gap(gap, individual_body_h, scale, occlusion_ratio)
     neighbors = [n for n in (gap.left_id, gap.right_id) if n is not None]
+    warnings: list[str] = []
+    if occlusion_ratio > 0.35:
+        warnings.append(f"heavy foreground occlusion: {occlusion_ratio:.3f}")
 
     return CandidatePatch(
         target_rgb=group_rgb,
         source_rgb=scaled_rgb,
         target_face_rgb=target_face_rgb,
         source_face_rgb=indiv_face_rgb,
-        source_mask=scaled_mask,
+        source_mask=source_mask,
         refined_mask=refined,
         offset=(oy, ox),
         contour=contour,
@@ -498,6 +567,11 @@ def _compute_patch(
         gap_bbox=gap.bbox,
         score=score,
         neighbors=neighbors,
+        original_source_mask_area=original_source_mask_area,
+        occluded_source_pixels=occluded_source_pixels,
+        occlusion_ratio=float(occlusion_ratio),
+        side_score=float(gap.side_score),
+        warnings=warnings,
     )
 
 
@@ -575,6 +649,7 @@ def find_insertion_patches(
         for g in _find_row_gaps(row, W):
             g.row_index = r_idx
             all_gaps.append(g)
+    _annotate_side_scores(rows, all_gaps)
 
     individual_body_h = max(
         float(individual["bbox"][3]),
@@ -590,11 +665,11 @@ def find_insertion_patches(
                 dilation_px=4,
             )
         else:
-            # bbox fallback: 前排的 bbox 并集
+            # bbox fallback: 同排和前排的 bbox 并集
             placed_rank = row_rank[r_idx]
             occ = np.zeros((H, W), dtype=bool)
             for other_r_idx, other_row in enumerate(rows):
-                if row_rank[other_r_idx] <= placed_rank:
+                if row_rank[other_r_idx] < placed_rank:
                     continue
                 for p in other_row:
                     x, y, w, h = p["bbox"]
