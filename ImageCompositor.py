@@ -1,7 +1,7 @@
 ﻿"""基于马尔科夫随机场的光照一致图像合成方法"""
 import numpy as np
 from collections import Counter
-from typing import Tuple
+from typing import Any, Tuple
                           
 # RGB与Lab色彩空间转换器 (基于sRGB和D65白点)
 class ColorSpaceConverter:
@@ -358,6 +358,7 @@ class MRFImageCompositor:
         self.gradient_calc = GradientWeightCalculator()
         self.hist_aligner = HistogramAligner()
         self.adaptive_calc = AdaptiveWeightCalculator()
+        self.last_report: dict[str, Any] = {}
     
     def compute_L_smooth_matrix(self, w_pq: np.ndarray, w_p: np.ndarray) -> np.ndarray:
         """
@@ -372,44 +373,75 @@ class MRFImageCompositor:
         H, W = w_pq.shape[:2]
         N = H * W
         
-        from scipy.sparse import lil_matrix, csr_matrix
-        W_sparse = lil_matrix((N, N))
+        from scipy.sparse import coo_matrix
         
         def idx(i, j):
             return i * W + j
         
+        rows = []
+        cols = []
+        vals = []
         for i in range(H):
             for j in range(W):
                 current_idx = idx(i, j)
-                # 上方
-                if i > 0:
-                    neighbor_idx = idx(i - 1, j)
-                    weight = w_pq[i, j, 0] / w_p[i, j]
-                    W_sparse[current_idx, neighbor_idx] = weight
-                # 右方
-                if j < W - 1:
-                    neighbor_idx = idx(i, j + 1)
-                    weight = w_pq[i, j, 1] / w_p[i, j]
-                    W_sparse[current_idx, neighbor_idx] = weight
-                # 下方
-                if i < H - 1:
-                    neighbor_idx = idx(i + 1, j)
-                    weight = w_pq[i, j, 2] / w_p[i, j]
-                    W_sparse[current_idx, neighbor_idx] = weight
-                # 左方
-                if j > 0:
-                    neighbor_idx = idx(i, j - 1)
-                    weight = w_pq[i, j, 3] / w_p[i, j]
-                    W_sparse[current_idx, neighbor_idx] = weight
-        
-        # 转换为CSR格式以提高计算效率
-        W_csr = W_sparse.tocsr()
-        D_diag = np.array(W_csr.sum(axis=1)).flatten()
-        D_diag = np.maximum(D_diag, 1e-8)
-        D_inv = np.diag(1.0 / D_diag)
-        S = D_inv @ W_csr
+                # 上、右、下、左
+                for direction, (ni, nj) in enumerate(((i - 1, j), (i, j + 1), (i + 1, j), (i, j - 1))):
+                    if 0 <= ni < H and 0 <= nj < W:
+                        rows.append(current_idx)
+                        cols.append(idx(ni, nj))
+                        vals.append(w_pq[i, j, direction] / w_p[i, j])
 
-        return S
+        return coo_matrix((vals, (rows, cols)), shape=(N, N)).tocsr()
+
+    def compute_L_smooth_matrix_active(
+        self,
+        w_pq: np.ndarray,
+        active_mask: np.ndarray,
+    ) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        只在 active_mask 覆盖的局部像素上构建 S，避免为整块裁片创建 H*W 大矩阵。
+
+        返回:
+            S: active 像素上的稀疏平滑矩阵
+            active_flat_indices: active 像素在完整裁片 flatten 后的索引
+            active_y, active_x: active 像素坐标
+        """
+        from scipy.sparse import coo_matrix
+
+        active_mask = np.asarray(active_mask, dtype=bool)
+        H, W = active_mask.shape
+        active_y, active_x = np.where(active_mask)
+        active_count = int(active_y.size)
+        if active_count == 0:
+            raise ValueError("active_mask is empty")
+
+        local_index = np.full((H, W), -1, dtype=np.int32)
+        local_index[active_y, active_x] = np.arange(active_count, dtype=np.int32)
+
+        rows: list[int] = []
+        cols: list[int] = []
+        vals: list[float] = []
+        for row_idx, (i, j) in enumerate(zip(active_y, active_x)):
+            neighbor_items: list[tuple[int, float]] = []
+            for direction, (ni, nj) in enumerate(((i - 1, j), (i, j + 1), (i + 1, j), (i, j - 1))):
+                if 0 <= ni < H and 0 <= nj < W:
+                    col_idx = int(local_index[ni, nj])
+                    if col_idx >= 0:
+                        neighbor_items.append((col_idx, float(w_pq[i, j, direction])))
+            denom = sum(weight for _, weight in neighbor_items)
+            if denom <= 1e-8:
+                rows.append(row_idx)
+                cols.append(row_idx)
+                vals.append(1.0)
+                continue
+            for col_idx, weight in neighbor_items:
+                rows.append(row_idx)
+                cols.append(col_idx)
+                vals.append(weight / denom)
+
+        active_flat_indices = active_y * W + active_x
+        S = coo_matrix((vals, (rows, cols)), shape=(active_count, active_count)).tocsr()
+        return S, active_flat_indices, active_y, active_x
     
     def llgc_iteration(self, L_prev: np.ndarray, S, mu: float, Y: np.ndarray) -> np.ndarray:
         """
@@ -463,7 +495,8 @@ class MRFImageCompositor:
                 source_face_rgb: np.ndarray,
                 target_face_rgb: list[np.ndarray],
                 optimize_sampling: bool = True,
-                apply_k_means: bool = True) -> np.ndarray:
+                apply_k_means: bool = True,
+                use_active_solve: bool = True) -> np.ndarray:
         """
         执行光照一致图像合成
         
@@ -477,6 +510,7 @@ class MRFImageCompositor:
         返回:
             result_rgb: 合成图像RGB, shape (H, W, 3), 范围 [0, 1]
         """
+        self.last_report = {}
         # RGB -> Lab 转换
         L_source, a_source, b_source = self.color_converter.rgb_to_lab(source_rgb)
         L_target, _, _ = self.color_converter.rgb_to_lab(target_rgb)
@@ -515,9 +549,6 @@ class MRFImageCompositor:
         # Step 4: 计算梯度保持权重矩阵 w_pq 和归一化向量 w_p
         w_pq, w_p = self.gradient_calc.compute_weights(L_source, sigma)
         
-        # Step 5-6: 计算仿射矩阵 S
-        S = self.compute_L_smooth_matrix(w_pq, w_p)
-        
         # Step 7: 计算先验观测值 Y
         Y = self.hist_aligner.compute_prior_difference(
             L_source, L_target, boundary_mask, M_diff
@@ -526,23 +557,42 @@ class MRFImageCompositor:
         # Step 8: 计算自适应正则化系数 μ
         mu = self.adaptive_calc.compute_mu(w_pq, boundary_mask, foreground_mask)
         
-        # Step 9: LLGC迭代求解 L^D
+        # Step 9: LLGC迭代求解 L^D。默认只在前景/边界局部区域求解，显著减少矩阵规模。
         H, W = L_source.shape
         N = H * W
-        Y_flat = Y.flatten()
-        
-        L_D_flat = np.zeros(N)
-        
+        active_mask = (np.asarray(foreground_mask, dtype=bool) | np.asarray(boundary_mask, dtype=bool))
+        if not active_mask.any():
+            active_mask = np.ones((H, W), dtype=bool)
+
+        if use_active_solve and active_mask.sum() < N:
+            S, active_flat_indices, _, _ = self.compute_L_smooth_matrix_active(w_pq, active_mask)
+            Y_iter = Y.flatten()[active_flat_indices]
+            L_D_iter = np.zeros(int(active_flat_indices.size))
+            solve_mode = "active"
+        else:
+            S = self.compute_L_smooth_matrix(w_pq, w_p)
+            Y_iter = Y.flatten()
+            L_D_iter = np.zeros(N)
+            active_flat_indices = np.arange(N)
+            solve_mode = "full"
+
+        converged = False
+        actual_iterations = 0
+        final_diff_norm = 0.0
         for iteration in range(self.max_iter):
-            L_D_prev = L_D_flat.copy()
-            L_D_flat = self.llgc_iteration(L_D_flat, S, mu, Y_flat)
+            L_D_prev = L_D_iter.copy()
+            L_D_iter = self.llgc_iteration(L_D_iter, S, mu, Y_iter)
+            actual_iterations = iteration + 1
             
-            diff_norm = np.linalg.norm(L_D_flat - L_D_prev)
-            if diff_norm < self.tolerance:
+            final_diff_norm = float(np.linalg.norm(L_D_iter - L_D_prev))
+            if final_diff_norm < self.tolerance:
                 print(f"LLGC收敛于第 {iteration} 次迭代")
+                converged = True
                 break
         
         # Step 10: 计算最终亮度值 L^C = L^D + L^S
+        L_D_flat = np.zeros(N, dtype=float)
+        L_D_flat[active_flat_indices] = L_D_iter
         L_D = L_D_flat.reshape(H, W)
         L_composite = L_D + L_source
         
@@ -551,5 +601,23 @@ class MRFImageCompositor:
         
         # Lab -> RGB 转换
         result_rgb = self.color_converter.lab_to_rgb(L_composite, a_source, b_source)
+
+        active_count = int(active_mask.sum()) if solve_mode == "active" else N
+        self.last_report = {
+            "solve_mode": solve_mode,
+            "full_pixel_count": int(N),
+            "active_pixel_count": int(active_count),
+            "active_ratio": round(float(active_count) / float(max(N, 1)), 6),
+            "max_iter": int(self.max_iter),
+            "actual_iterations": int(actual_iterations),
+            "converged": bool(converged),
+            "final_diff_norm": final_diff_norm,
+            "tolerance": float(self.tolerance),
+            "mu": float(mu),
+            "sigma": float(sigma),
+            "m_source": float(M_S),
+            "m_target": float(M_T),
+            "m_diff": float(M_diff),
+        }
         
         return result_rgb

@@ -772,6 +772,7 @@ def compose_and_paste(
     max_crop_size: int = 200,
     preserve_detail: bool = True,
     feather_px: float = 2.0,
+    use_active_solve: bool = True,
 ) -> np.ndarray:
     """裁出 patch 的 compose 区域，调 MRFImageCompositor.compose，贴回 group_rgb。
 
@@ -794,6 +795,7 @@ def compose_and_paste(
         boundary_mask=bd,
         source_face_rgb=patch.source_face_rgb,
         target_face_rgb=patch.target_face_rgb,
+        use_active_solve=use_active_solve,
     )
 
     oy0, ox0, oy1, ox1 = paste_box

@@ -223,7 +223,7 @@ def compose_and_paste(
 
 ### max_crop_size
 
-`ImageCompositor.compose` 用稠密 N×N 仿射矩阵（N = H×W），大裁片会爆内存。`max_crop_size=200`（默认）会把裁片下采样到最长边 ≤ 200 px 来计算平滑光照/颜色修正场。
+`ImageCompositor.compose` 默认启用局部 active-mask 稀疏矩阵，只在前景和边界局部像素上做 LLGC 迭代，避免整块裁片背景参与 N×N 求解。`max_crop_size=200`（默认）仍会限制裁片最长边，用来防止极端大人像或 mask 异常时矩阵过大。
 
 默认 `preserve_detail=True` 时，低分辨率 MRF 结果不会被直接放大贴回，而是先转成相对 source 的修正场，再应用到原分辨率人像裁片。这样保留衣服、头发和脸部细节，同时仍然避免大矩阵爆内存。如果为了复现旧行为，可以传 `preserve_detail=False`。
 
@@ -234,7 +234,7 @@ SAM3 mask 和缩放后的二值 mask 边缘都是硬边，直接 `np.where(mask,
 ## 已知限制
 
 - **后排插入**：身体下沿会被前排真实 mask 正确遮挡，只能看清头和肩膀。要看清全身请选**前排候选**。
-- **MRF 慢**：单次合成 25–35 秒（crop ≤ 200 px）。`max_iter=200` 收敛阈值 `1e-4`，要更快可改小，要更精细可改大。
+- **MRF 慢**：现在默认使用局部 active-mask 稀疏矩阵，并由 orchestrator 的 `lighting_verifier.py` 根据色调偏差和候选面积选择较小 `max_iter`。要更快可降低 `max_iter` / `max_crop_size`，要更精细可提高迭代数。
 - **face 估计是几何启发式**：基于 bbox 顶部 16% 推算，不是真的人脸检测。后续如果要换真检测器，只改 `PersonInserter._scale_image_and_mask` 之外的地方都不用动。
 - **行聚类阈值**对极端稀疏 / 密集场景可能要调：`_cluster_rows` 里的 `max(20, 0.04 × H)`。
 - **深度信息用 face_h 估算**：竖排非常规的合照（如只有 1 行或所有人在一个深度）会判定不准。
